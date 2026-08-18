@@ -3,14 +3,11 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 
-
-
-
+// Register
 const register = async (req, res) => {
   try {
     const { name, email, phone, password } = req.body || {};
 
-    // Check required fields
     if (!name || !email || !phone || !password) {
       return res.status(400).json({
         success: false,
@@ -18,7 +15,13 @@ const register = async (req, res) => {
       });
     }
 
-    // Check if user already exists
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
     const existingUser = await User.findOne({
       email: email.toLowerCase(),
     });
@@ -30,10 +33,8 @@ const register = async (req, res) => {
       });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Create user
     const user = await User.create({
       name,
       email: email.toLowerCase(),
@@ -53,6 +54,8 @@ const register = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Registration error:", error);
+
     res.status(500).json({
       success: false,
       message: "Registration failed",
@@ -61,11 +64,12 @@ const register = async (req, res) => {
   }
 };
 
+
+// Login
 const login = async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
-    // Check required fields
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -73,10 +77,10 @@ const login = async (req, res) => {
       });
     }
 
-    // Find user
+    // Explicitly include password because User model uses select: false
     const user = await User.findOne({
       email: email.toLowerCase(),
-    });
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
@@ -85,7 +89,6 @@ const login = async (req, res) => {
       });
     }
 
-    // Compare password
     const passwordMatch = await bcrypt.compare(
       password,
       user.password
@@ -97,32 +100,33 @@ const login = async (req, res) => {
         message: "Invalid email or password",
       });
     }
-// Create JWT
-const token = jwt.sign(
-  {
-    id: user._id,
-    role: user.role,
-  },
-  process.env.JWT_SECRET,
-  {
-    expiresIn: "7d",
-  }
-);
 
-// Login successful
-res.json({
-  success: true,
-  message: "Login successful",
-  token,
-  user: {
-    id: user._id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone,
-    role: user.role,
-  },
-});
+    const token = jwt.sign(
+      {
+        id: user._id,
+        role: user.role,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+      },
+    });
   } catch (error) {
+    console.error("Login error:", error);
+
     res.status(500).json({
       success: false,
       message: "Login failed",

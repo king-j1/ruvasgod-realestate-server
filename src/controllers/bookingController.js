@@ -1,6 +1,28 @@
 const Booking = require("../models/Booking");
 const Vehicle = require("../models/Vehicle");
 
+// Mark overdue active bookings
+const markOverdueBookings = async () => {
+  try {
+    const now = new Date();
+
+    await Booking.updateMany(
+      {
+        status: "active",
+        endDate: { $lt: now },
+      },
+      {
+        $set: {
+          status: "overdue",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Mark overdue bookings error:", error);
+  }
+};
+
+
 // Create a rental booking
 const createBooking = async (req, res) => {
   try {
@@ -10,7 +32,6 @@ const createBooking = async (req, res) => {
       endDate,
     } = req.body;
 
-    // Make sure required information was provided
     if (!vehicleId || !startDate || !endDate) {
       return res.status(400).json({
         success: false,
@@ -18,7 +39,6 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Find the vehicle
     const vehicle = await Vehicle.findById(vehicleId);
 
     if (!vehicle) {
@@ -28,7 +48,6 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Make sure the vehicle is available for rental
     if (!vehicle.availableForRent) {
       return res.status(400).json({
         success: false,
@@ -36,11 +55,9 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Convert dates into JavaScript Date objects
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    // Make sure dates are valid
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({
         success: false,
@@ -48,7 +65,6 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // End date must be after start date
     if (end <= start) {
       return res.status(400).json({
         success: false,
@@ -56,11 +72,11 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Check if the vehicle is already booked
+    // Prevent overlapping bookings
     const existingBooking = await Booking.findOne({
       vehicle: vehicleId,
       status: {
-        $in: ["pending", "confirmed", "active"],
+        $in: ["pending", "confirmed", "active", "overdue"],
       },
       startDate: {
         $lt: end,
@@ -77,18 +93,15 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Calculate number of rental days
     const millisecondsPerDay = 1000 * 60 * 60 * 24;
 
     const rentalDays = Math.ceil(
       (end - start) / millisecondsPerDay
     );
 
-    // Calculate total rental price
     const totalPrice =
       rentalDays * vehicle.rentalPricePerDay;
 
-    // Create the booking
     const booking = await Booking.create({
       user: req.user._id,
       vehicle: vehicleId,
@@ -99,7 +112,6 @@ const createBooking = async (req, res) => {
       paymentStatus: "unpaid",
     });
 
-    // Return the booking
     res.status(201).json({
       success: true,
       message: "Booking created successfully",
@@ -116,9 +128,12 @@ const createBooking = async (req, res) => {
   }
 };
 
-// Get all bookings belonging to the logged-in customer
+
+// Get customer's bookings
 const getMyBookings = async (req, res) => {
   try {
+    await markOverdueBookings();
+
     const bookings = await Booking.find({
       user: req.user._id,
     })
@@ -141,13 +156,15 @@ const getMyBookings = async (req, res) => {
   }
 };
 
+
 // Get one booking
 const getBookingById = async (req, res) => {
   try {
+    await markOverdueBookings();
+
     const booking = await Booking.findById(req.params.id)
       .populate("vehicle");
 
-    // Booking does not exist
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -155,7 +172,6 @@ const getBookingById = async (req, res) => {
       });
     }
 
-    // Make sure the customer owns this booking
     if (booking.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         success: false,
@@ -178,12 +194,12 @@ const getBookingById = async (req, res) => {
   }
 };
 
-// Cancel a booking
+
+// Cancel booking
 const cancelBooking = async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
 
-    // Booking does not exist
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -191,7 +207,6 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    // Make sure the customer owns this booking
     if (booking.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         success: false,
@@ -199,7 +214,6 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    // Don't allow cancellation after rental has started
     if (booking.status === "active") {
       return res.status(400).json({
         success: false,
@@ -207,7 +221,13 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    // Don't cancel an already completed booking
+    if (booking.status === "overdue") {
+      return res.status(400).json({
+        success: false,
+        message: "Overdue bookings cannot be cancelled",
+      });
+    }
+
     if (booking.status === "completed") {
       return res.status(400).json({
         success: false,
@@ -215,7 +235,6 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    // Don't cancel an already cancelled booking
     if (booking.status === "cancelled") {
       return res.status(400).json({
         success: false,
@@ -223,7 +242,6 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    // Change booking status
     booking.status = "cancelled";
 
     await booking.save();
@@ -244,9 +262,12 @@ const cancelBooking = async (req, res) => {
   }
 };
 
+
 // Get all bookings - Admin only
 const getAllBookings = async (req, res) => {
   try {
+    await markOverdueBookings();
+
     const bookings = await Booking.find()
       .populate("user", "name email phone role")
       .populate("vehicle")
@@ -269,16 +290,71 @@ const getAllBookings = async (req, res) => {
 };
 
 
+// Update booking status - Admin only
+const updateBookingStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+
+    const allowedStatuses = [
+      "pending",
+      "confirmed",
+      "active",
+      "completed",
+      "overdue",
+      "cancelled",
+    ];
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Booking status is required",
+      });
+    }
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking status",
+      });
+    }
+
+    const booking = await Booking.findById(req.params.id)
+      .populate("user", "name email phone role")
+      .populate("vehicle");
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    booking.status = status;
+
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Booking status updated successfully",
+      booking,
+    });
+  } catch (error) {
+    console.error("Update booking status error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update booking status",
+      error: error.message,
+    });
+  }
+};
 
 
-
-
-
-// Export controller functions
 module.exports = {
   createBooking,
   getMyBookings,
   getBookingById,
   cancelBooking,
   getAllBookings,
+  updateBookingStatus,
 };

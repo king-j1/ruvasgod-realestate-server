@@ -1,5 +1,9 @@
 const express = require("express");
 const dotenv = require("dotenv");
+
+// Load environment variables FIRST
+dotenv.config();
+
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -9,8 +13,6 @@ const vehicleRoutes = require("./routes/vehicleRoutes");
 const authRoutes = require("./routes/authRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
-
-dotenv.config();
 
 const app = express();
 
