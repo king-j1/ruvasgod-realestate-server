@@ -290,6 +290,7 @@ const getAllBookings = async (req, res) => {
 };
 
 
+
 // Update booking status - Admin only
 const updateBookingStatus = async (req, res) => {
   try {
@@ -329,6 +330,25 @@ const updateBookingStatus = async (req, res) => {
       });
     }
 
+    // Define allowed booking transitions
+    const allowedTransitions = {
+      pending: ["confirmed", "cancelled"],
+      confirmed: ["active", "cancelled"],
+      active: ["completed"],
+      completed: [],
+      overdue: [],
+      cancelled: [],
+    };
+
+    const currentStatus = booking.status;
+
+    if (!allowedTransitions[currentStatus].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot change booking from ${currentStatus} to ${status}`,
+      });
+    }
+
     booking.status = status;
 
     await booking.save();
@@ -348,7 +368,6 @@ const updateBookingStatus = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   createBooking,
