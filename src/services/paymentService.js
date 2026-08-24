@@ -5,6 +5,7 @@ const initializePayment = async ({
   amount,
   reference,
   metadata,
+  callback_url,
 }) => {
   try {
     const response = await axios.post(
@@ -15,6 +16,7 @@ const initializePayment = async ({
         currency: "GHS",
         reference,
         metadata,
+        callback_url,
       },
       {
         headers: {

@@ -28,7 +28,7 @@ const initializeBookingPayment = async (req, res) => {
       });
     }
 
-    // Make sure this customer owns the booking
+    // Customer can only pay for their own booking
     if (
       booking.user._id.toString() !==
       req.user._id.toString()
@@ -39,11 +39,11 @@ const initializeBookingPayment = async (req, res) => {
       });
     }
 
-    // Don't allow payment for cancelled bookings
-    if (booking.status === "cancelled") {
+    // Only pending bookings can be paid
+    if (booking.status !== "pending") {
       return res.status(400).json({
         success: false,
-        message: "Cancelled bookings cannot be paid for",
+        message: "Only pending bookings can be paid for",
       });
     }
 
@@ -56,12 +56,22 @@ const initializeBookingPayment = async (req, res) => {
     }
 
     // Convert GHS to pesewas
-    const amount = Math.round(
-      booking.totalPrice * 100
-    );
+    const amount = Math.round(booking.totalPrice * 100);
 
     // Create unique payment reference
     const reference = `RUVA-${booking._id}-${Date.now()}`;
+
+    const frontendUrl = process.env.FRONTEND_URL;
+
+    if (!frontendUrl) {
+      return res.status(500).json({
+        success: false,
+        message: "Payment callback URL is not configured",
+      });
+    }
+
+    // Backend controls the callback URL
+    const callback_url = `${frontendUrl}/payment/callback`;
 
     // Initialize payment with Paystack
     const payment = await initializePayment({
@@ -73,10 +83,12 @@ const initializeBookingPayment = async (req, res) => {
         userId: booking.user._id.toString(),
         vehicleId: booking.vehicle._id.toString(),
       },
+      callback_url,
     });
 
     // Save payment reference
     booking.paymentReference = reference;
+    booking.paymentStatus = "pending";
 
     await booking.save();
 
@@ -102,11 +114,9 @@ const initializeBookingPayment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to initialize payment",
-      error: error.message,
     });
   }
 };
-
 
 // Verify Paystack payment
 const verifyBookingPayment = async (req, res) => {
@@ -143,9 +153,28 @@ const verifyBookingPayment = async (req, res) => {
     }
 
     // Find booking using payment reference
-    const booking = await Booking.findOne({
+    let booking = await Booking.findOne({
       paymentReference: reference,
     });
+
+    // Fallback for older checkout links when a booking reference was later replaced.
+    if (!booking && transaction?.metadata?.bookingId) {
+      booking = await Booking.findById(
+        transaction.metadata.bookingId
+      );
+
+      if (
+        booking &&
+        transaction?.metadata?.userId &&
+        booking.user.toString() !==
+          transaction.metadata.userId.toString()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment metadata does not match booking owner",
+        });
+      }
+    }
 
     if (!booking) {
       return res.status(404).json({
@@ -166,6 +195,7 @@ const verifyBookingPayment = async (req, res) => {
     }
 
     // Mark payment and booking as successful
+    booking.paymentReference = reference;
     booking.paymentStatus = "paid";
     booking.status = "confirmed";
 
@@ -243,9 +273,28 @@ const handlePaystackWebhook = async (req, res) => {
     const reference = transaction.reference;
 
     // Find booking using payment reference
-    const booking = await Booking.findOne({
+    let booking = await Booking.findOne({
       paymentReference: reference,
     });
+
+    // Fallback for older checkout links when a booking reference was later replaced.
+    if (!booking && transaction?.metadata?.bookingId) {
+      booking = await Booking.findById(
+        transaction.metadata.bookingId
+      );
+
+      if (
+        booking &&
+        transaction?.metadata?.userId &&
+        booking.user.toString() !==
+          transaction.metadata.userId.toString()
+      ) {
+        return res.status(200).json({
+          success: true,
+          message: "Metadata user mismatch",
+        });
+      }
+    }
 
     if (!booking) {
       console.log(
@@ -268,6 +317,7 @@ const handlePaystackWebhook = async (req, res) => {
     }
 
     // Mark booking as paid
+    booking.paymentReference = reference;
     booking.paymentStatus = "paid";
     booking.status = "confirmed";
 

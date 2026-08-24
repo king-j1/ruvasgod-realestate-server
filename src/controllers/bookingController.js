@@ -1,19 +1,43 @@
 const Booking = require("../models/Booking");
 const Vehicle = require("../models/Vehicle");
 
-// Mark overdue active bookings
+// Update lifecycle statuses for paid rentals based on current UTC date
 const markOverdueBookings = async () => {
   try {
     const now = new Date();
+    const todayUtcStart = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate()
+      )
+    );
 
+    // Paid bookings should become active on/after start date.
     await Booking.updateMany(
       {
-        status: "active",
-        endDate: { $lt: now },
+        status: "confirmed",
+        paymentStatus: "paid",
+        startDate: { $lte: todayUtcStart },
+        endDate: { $gte: todayUtcStart },
       },
       {
         $set: {
-          status: "overdue",
+          status: "active",
+        },
+      }
+    );
+
+    // After the end date has passed, paid rentals should be completed.
+    await Booking.updateMany(
+      {
+        status: { $in: ["confirmed", "active", "overdue"] },
+        paymentStatus: "paid",
+        endDate: { $lt: todayUtcStart },
+      },
+      {
+        $set: {
+          status: "completed",
         },
       }
     );
@@ -87,9 +111,17 @@ const createBooking = async (req, res) => {
     });
 
     if (existingBooking) {
+      const conflictingStart = existingBooking.startDate
+        .toISOString()
+        .split("T")[0];
+
+      const conflictingEnd = existingBooking.endDate
+        .toISOString()
+        .split("T")[0];
+
       return res.status(409).json({
         success: false,
-        message: "Vehicle is already booked for these dates",
+        message: `Vehicle is already booked for these dates (${existingBooking.status}: ${conflictingStart} to ${conflictingEnd})`,
       });
     }
 
