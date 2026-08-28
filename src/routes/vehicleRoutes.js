@@ -10,15 +10,15 @@ const {
 
 const upload = require("../middleware/uploadMiddleware");
 const { protect } = require("../middleware/authMiddleware");
-const adminOnly = require("../middleware/adminMiddleware");
+const staffOnly = require("../middleware/staffMiddleware");
 
 const router = express.Router();
 
-// Create a vehicle — Admin only
+// Create a vehicle — Admin, Manager, Vehicle Manager
 router.post(
   "/",
   protect,
-  adminOnly,
+  staffOnly("admin", "manager", "vehicle_manager"),
   upload.array("images", 10),
   createVehicle
 );
@@ -29,20 +29,20 @@ router.get("/", getVehicles);
 // Get one vehicle — Public
 router.get("/:id", getVehicleById);
 
-// Update a vehicle — Admin only
+// Update a vehicle — Admin, Manager, Vehicle Manager
 router.put(
   "/:id",
   protect,
-  adminOnly,
+  staffOnly("admin", "manager", "vehicle_manager"),
   upload.array("images", 10),
   updateVehicle
 );
 
-// Delete a vehicle — Admin only
+// Delete a vehicle — Admin, Manager, Vehicle Manager
 router.delete(
   "/:id",
   protect,
-  adminOnly,
+  staffOnly("admin", "manager", "vehicle_manager"),
   deleteVehicle
 );
 

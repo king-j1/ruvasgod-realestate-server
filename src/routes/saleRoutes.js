@@ -9,7 +9,7 @@ const {
 } = require("../controllers/saleController");
 
 const { protect } = require("../middleware/authMiddleware");
-const adminOnly = require("../middleware/adminMiddleware");
+const staffOnly = require("../middleware/staffMiddleware");
 
 const router = express.Router();
 
@@ -17,12 +17,17 @@ router.post("/", protect, createSale);
 
 router.get("/my-sales", protect, getMySales);
 
-router.get("/admin", protect, adminOnly, getAllSales);
+router.get(
+  "/admin",
+  protect,
+  staffOnly("admin", "manager", "sales", "finance"),
+  getAllSales
+);
 
 router.put(
   "/admin/:id/status",
   protect,
-  adminOnly,
+  staffOnly("admin", "manager", "sales"),
   updateSaleStatus
 );
 

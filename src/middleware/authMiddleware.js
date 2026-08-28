@@ -32,6 +32,14 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // Reject deactivated staff/admin accounts even with a valid token
+    if (user.isActive === false) {
+      return res.status(401).json({
+        success: false,
+        message: "This account has been deactivated.",
+      });
+    }
+
     // Attach user to request
     req.user = user;
 

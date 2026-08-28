@@ -97,9 +97,11 @@ const getSaleById = async (req, res) => {
     }
 
     const isOwner = sale.user._id.toString() === req.user._id.toString();
-    const isAdmin = req.user.role === "admin";
+    const isStaffViewer = ["admin", "manager", "sales", "finance"].includes(
+      req.user.role
+    );
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isStaffViewer) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to view this sale",

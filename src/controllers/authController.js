@@ -101,6 +101,14 @@ const login = async (req, res) => {
       });
     }
 
+    // Reject deactivated staff/admin accounts at login
+    if (user.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        message: "This account has been deactivated. Please contact an administrator.",
+      });
+    }
+
     const token = jwt.sign(
       {
         id: user._id,

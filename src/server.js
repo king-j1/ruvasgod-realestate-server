@@ -14,6 +14,7 @@ const authRoutes = require("./routes/authRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const saleRoutes = require("./routes/saleRoutes");
+const staffRoutes = require("./routes/staffRoutes");
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/sales", saleRoutes);
+app.use("/api/staff", staffRoutes);
 
 // Health check
 app.get("/", (req, res) => {

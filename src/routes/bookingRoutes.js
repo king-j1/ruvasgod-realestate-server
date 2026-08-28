@@ -10,7 +10,7 @@ const {
 } = require("../controllers/bookingController");
 
 const { protect } = require("../middleware/authMiddleware");
-const adminOnly = require("../middleware/adminMiddleware");
+const staffOnly = require("../middleware/staffMiddleware");
 
 const router = express.Router();
 
@@ -20,16 +20,21 @@ router.post("/", protect, createBooking);
 // Get logged-in customer's bookings
 router.get("/my-bookings", protect, getMyBookings);
 
-// Update booking status - Admin only
+// Update booking status - Admin, Manager, Rental
 router.put(
   "/admin/:id/status",
   protect,
-  adminOnly,
+  staffOnly("admin", "manager", "rental"),
   updateBookingStatus
 );
 
-// Get all bookings - Admin only
-router.get("/admin", protect, adminOnly, getAllBookings);
+// Get all bookings - Admin, Manager, Rental, Finance (read)
+router.get(
+  "/admin",
+  protect,
+  staffOnly("admin", "manager", "rental", "finance"),
+  getAllBookings
+);
 
 // Get one booking
 router.get("/:id", protect, getBookingById);
