@@ -6,6 +6,7 @@ const {
   getVehicleById,
   updateVehicle,
   deleteVehicle,
+  getAlternativeVehicles,
 } = require("../controllers/vehicleController");
 
 const upload = require("../middleware/uploadMiddleware");
@@ -25,6 +26,9 @@ router.post(
 
 // Get all vehicles — Public
 router.get("/", getVehicles);
+
+// Get alternative vehicles for given dates — Public
+router.get("/:id/alternatives", getAlternativeVehicles);
 
 // Get one vehicle — Public
 router.get("/:id", getVehicleById);

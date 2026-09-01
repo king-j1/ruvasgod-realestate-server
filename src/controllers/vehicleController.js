@@ -1,4 +1,5 @@
 const Vehicle = require("../models/Vehicle");
+const Booking = require("../models/Booking");
 const cloudinary = require("../config/cloudinary");
 
 // Create a vehicle
@@ -216,10 +217,113 @@ const deleteVehicle = async (req, res) => {
 };
 
 
+// Get alternative vehicles for given dates
+const getAlternativeVehicles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // Validate inputs
+    if (!id || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Vehicle ID and dates are required",
+      });
+    }
+
+    // Get the requested vehicle
+    const requestedVehicle = await Vehicle.findById(id);
+
+    if (!requestedVehicle) {
+      return res.status(404).json({
+        success: false,
+        message: "Vehicle not found",
+      });
+    }
+
+    // Parse and validate dates
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid start or end date",
+      });
+    }
+
+    if (end <= start) {
+      return res.status(400).json({
+        success: false,
+        message: "End date must be after start date",
+      });
+    }
+
+    // Find vehicles with the same type
+    const candidateVehicles = await Vehicle.find({
+      type: requestedVehicle.type,
+      availableForRent: true,
+      _id: { $ne: id }, // Exclude the requested vehicle
+    });
+
+    // Filter out vehicles with conflicting bookings
+    const availableVehicles = [];
+
+    for (const vehicle of candidateVehicles) {
+      // Check for overlapping bookings
+      const conflictingBooking = await Booking.findOne({
+        vehicle: vehicle._id,
+        status: {
+          $in: ["pending", "confirmed", "active", "overdue"],
+        },
+        startDate: {
+          $lt: end,
+        },
+        endDate: {
+          $gt: start,
+        },
+      });
+
+      if (!conflictingBooking) {
+        availableVehicles.push(vehicle);
+      }
+    }
+
+    // Sort by rental price (closest to the requested vehicle's price first)
+    availableVehicles.sort((a, b) => {
+      const aPriceDiff = Math.abs(
+        a.rentalPricePerDay - requestedVehicle.rentalPricePerDay
+      );
+      const bPriceDiff = Math.abs(
+        b.rentalPricePerDay - requestedVehicle.rentalPricePerDay
+      );
+      return aPriceDiff - bPriceDiff;
+    });
+
+    // Return top 3-6 alternatives
+    const alternatives = availableVehicles.slice(0, 6);
+
+    res.status(200).json({
+      success: true,
+      count: alternatives.length,
+      vehicles: alternatives,
+    });
+  } catch (error) {
+    console.error("Get alternative vehicles error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch alternative vehicles",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   createVehicle,
   getVehicles,
   getVehicleById,
   updateVehicle,
   deleteVehicle,
+  getAlternativeVehicles,
 };

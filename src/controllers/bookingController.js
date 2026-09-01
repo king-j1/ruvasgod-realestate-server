@@ -401,6 +401,91 @@ const updateBookingStatus = async (req, res) => {
   }
 };
 
+// Check vehicle availability for given dates
+const checkAvailability = async (req, res) => {
+  try {
+    const { vehicleId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // Validate inputs
+    if (!vehicleId || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Vehicle ID and dates are required",
+      });
+    }
+
+    const vehicle = await Vehicle.findById(vehicleId);
+
+    if (!vehicle) {
+      return res.status(404).json({
+        success: false,
+        message: "Vehicle not found",
+      });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid start or end date",
+      });
+    }
+
+    if (end <= start) {
+      return res.status(400).json({
+        success: false,
+        message: "End date must be after start date",
+      });
+    }
+
+    if (!vehicle.availableForRent) {
+      return res.status(200).json({
+        success: true,
+        available: false,
+        reason: "Vehicle is not available for rental",
+      });
+    }
+
+    // Check for overlapping bookings
+    const conflictingBooking = await Booking.findOne({
+      vehicle: vehicleId,
+      status: {
+        $in: ["pending", "confirmed", "active", "overdue"],
+      },
+      startDate: {
+        $lt: end,
+      },
+      endDate: {
+        $gt: start,
+      },
+    });
+
+    if (conflictingBooking) {
+      return res.status(200).json({
+        success: true,
+        available: false,
+        reason: "Vehicle is booked for these dates",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      available: true,
+    });
+  } catch (error) {
+    console.error("Check availability error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to check availability",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   createBooking,
   getMyBookings,
@@ -408,4 +493,5 @@ module.exports = {
   cancelBooking,
   getAllBookings,
   updateBookingStatus,
+  checkAvailability,
 };
