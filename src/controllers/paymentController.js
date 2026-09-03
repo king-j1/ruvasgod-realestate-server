@@ -372,7 +372,7 @@ const finalizeSalePayment = async ({ reference, transaction }) => {
     await session.withTransaction(async () => {
       const vehicleUpdateResult = await Vehicle.updateOne(
         { _id: sale.vehicle, availableForSale: true },
-        { $set: { availableForSale: false } },
+        { $set: { availableForSale: false, availableForRent: false } },
         { session }
       );
 
