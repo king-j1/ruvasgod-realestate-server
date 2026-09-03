@@ -23,21 +23,49 @@ const createSale = async (req, res) => {
     }
 
     if (!vehicle.availableForSale) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "This vehicle is not available for sale",
+        message: "Vehicle is no longer available for sale.",
       });
     }
 
-    const sale = await Sale.create({
-      user: req.user._id,
+    const completedSale = await Sale.exists({
       vehicle: vehicle._id,
-      salePrice: vehicle.price,
-      currency: "GHS",
-      paymentStatus: "unpaid",
-      saleStatus: "pending",
-      ownershipStatus: "pending_transfer",
+      $or: [
+        { saleStatus: "completed" },
+        { ownershipStatus: "transferred" },
+      ],
     });
+
+    if (completedSale) {
+      return res.status(409).json({
+        success: false,
+        message: "Vehicle is no longer available for sale.",
+      });
+    }
+
+    let sale;
+
+    try {
+      sale = await Sale.create({
+        user: req.user._id,
+        vehicle: vehicle._id,
+        salePrice: vehicle.price,
+        currency: "GHS",
+        paymentStatus: "unpaid",
+        saleStatus: "pending",
+        ownershipStatus: "pending_transfer",
+      });
+    } catch (error) {
+      if (error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: "Vehicle is no longer available for sale.",
+        });
+      }
+
+      throw error;
+    }
 
     const populatedSale = await Sale.findById(sale._id)
       .populate("vehicle")
