@@ -21,24 +21,20 @@ const vehicleSchema = new mongoose.Schema(
 
     price: {
       type: Number,
-      required: true,
+      required: function () {
+        return this.availableForSale === true;
+      },
+      min: 0,
     },
 
     rentalPricePerDay: {
       type: Number,
+      min: 0,
     },
 
     type: {
       type: String,
-      enum: [
-        "SUV",
-        "Sedan",
-        "Pickup",
-        "Sports",
-        "Electric",
-        "Luxury",
-        "Van",
-      ],
+      enum: ["SUV", "Sedan", "Pickup", "Sports", "Electric", "Luxury", "Van"],
       required: true,
     },
 
@@ -103,7 +99,7 @@ const vehicleSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 module.exports = mongoose.model("Vehicle", vehicleSchema);

@@ -1,27 +1,242 @@
+
 const Vehicle = require("../models/Vehicle");
 const Booking = require("../models/Booking");
 const cloudinary = require("../config/cloudinary");
 
+// Allowed fields for vehicle creation and update
+const ALLOWED_FIELDS = [
+  "make",
+  "model",
+  "year",
+  "price",
+  "rentalPricePerDay",
+  "type",
+  "fuelType",
+  "transmission",
+  "mileage",
+  "color",
+  "condition",
+  "description",
+  "location",
+  "availableForSale",
+  "availableForRent",
+  "isFeatured",
+];
+
+// Validate vehicle data
+const validateVehicleData = (data) => {
+  const errors = [];
+
+  // Required text fields
+  if (!data.make || typeof data.make !== "string" || !data.make.trim()) {
+    errors.push("Make is required and must be a non-empty string");
+  }
+
+  if (!data.model || typeof data.model !== "string" || !data.model.trim()) {
+    errors.push("Model is required and must be a non-empty string");
+  }
+
+  // Year
+  if (
+    !Number.isFinite(data.year) ||
+    data.year < 1900 ||
+    data.year > new Date().getFullYear() + 1
+  ) {
+    errors.push("Year is required and must be a valid year");
+  }
+
+  // Vehicle type
+  const validTypes = [
+    "SUV",
+    "Sedan",
+    "Pickup",
+    "Sports",
+    "Electric",
+    "Luxury",
+    "Van",
+  ];
+
+  if (!data.type || typeof data.type !== "string") {
+    errors.push("Type is required");
+  } else if (!validTypes.includes(data.type)) {
+    errors.push(`Type must be one of: ${validTypes.join(", ")}`);
+  }
+
+  // Fuel type
+  const validFuelTypes = [
+    "Petrol",
+    "Diesel",
+    "Electric",
+    "Hybrid",
+  ];
+
+  if (!data.fuelType || typeof data.fuelType !== "string") {
+    errors.push("Fuel type is required");
+  } else if (!validFuelTypes.includes(data.fuelType)) {
+    errors.push(
+      `Fuel type must be one of: ${validFuelTypes.join(", ")}`
+    );
+  }
+
+  // Transmission
+  const validTransmissions = ["Automatic", "Manual"];
+
+  if (!data.transmission || typeof data.transmission !== "string") {
+    errors.push("Transmission is required");
+  } else if (!validTransmissions.includes(data.transmission)) {
+    errors.push(
+      `Transmission must be one of: ${validTransmissions.join(", ")}`
+    );
+  }
+
+  // Condition
+  const validConditions = ["New", "Used"];
+
+  if (!data.condition || typeof data.condition !== "string") {
+    errors.push("Condition is required");
+  } else if (!validConditions.includes(data.condition)) {
+    errors.push(
+      `Condition must be one of: ${validConditions.join(", ")}`
+    );
+  }
+
+  // Sale / rental availability
+  const availableForSale = data.availableForSale === true;
+  const availableForRent = data.availableForRent === true;
+
+  if (!availableForSale && !availableForRent) {
+    errors.push(
+      "Vehicle must be available for at least sale or rental"
+    );
+  }
+
+  // Sale price
+  if (availableForSale) {
+    if (
+      !Number.isFinite(data.price) ||
+      data.price <= 0
+    ) {
+      errors.push(
+        "Sale price is required and must be a positive number when vehicle is available for sale"
+      );
+    }
+  }
+
+  // Rental price
+  if (availableForRent) {
+    if (
+      !Number.isFinite(data.rentalPricePerDay) ||
+      data.rentalPricePerDay <= 0
+    ) {
+      errors.push(
+        "Rental price per day is required and must be a positive number when vehicle is available for rental"
+      );
+    }
+  }
+
+  // Mileage
+  if (
+    data.mileage !== undefined &&
+    (!Number.isFinite(data.mileage) || data.mileage < 0)
+  ) {
+    errors.push("Mileage must be a valid number greater than or equal to 0");
+  }
+
+  return errors;
+};
+
+// Filter and sanitize vehicle data
+const sanitizeVehicleData = (data) => {
+  const sanitized = {};
+
+  ALLOWED_FIELDS.forEach((field) => {
+    if (field in data) {
+      sanitized[field] = data[field];
+    }
+  });
+
+  return sanitized;
+};
+
+// Convert FormData values into correct JavaScript types
+const normalizeVehicleData = (data) => {
+  const normalized = { ...data };
+
+  // Convert numeric fields
+  const numericFields = [
+    "year",
+    "price",
+    "rentalPricePerDay",
+    "mileage",
+  ];
+
+  numericFields.forEach((field) => {
+    if (
+      normalized[field] !== undefined &&
+      normalized[field] !== ""
+    ) {
+      normalized[field] = Number(normalized[field]);
+    }
+  });
+
+  // Convert boolean fields
+  const booleanFields = [
+    "availableForSale",
+    "availableForRent",
+    "isFeatured",
+  ];
+
+  booleanFields.forEach((field) => {
+    if (normalized[field] !== undefined) {
+      normalized[field] =
+        normalized[field] === true ||
+        normalized[field] === "true";
+    }
+  });
+
+  return normalized;
+};
+
 // Create a vehicle
 const createVehicle = async (req, res) => {
   try {
+    // Sanitize and normalize incoming data
+    const sanitizedData = normalizeVehicleData(
+      sanitizeVehicleData(req.body)
+    );
+
+    // Validate vehicle data
+    const validationErrors = validateVehicleData(
+      sanitizedData
+    );
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: validationErrors,
+      });
+    }
+
     let images = [];
 
+    // Upload images to Cloudinary
     if (req.files && req.files.length > 0) {
       const uploadPromises = req.files.map((file) => {
         return new Promise((resolve, reject) => {
-          const uploadStream = cloudinary.uploader.upload_stream(
-            {
-              folder: "ruvasgod-auto/vehicles",
-            },
-            (error, result) => {
-              if (error) {
-                reject(error);
-              } else {
-                resolve(result.secure_url);
+          const uploadStream =
+            cloudinary.uploader.upload_stream(
+              {
+                folder: "ruvasgod-auto/vehicles",
+              },
+              (error, result) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  resolve(result.secure_url);
+                }
               }
-            }
-          );
+            );
 
           uploadStream.end(file.buffer);
         });
@@ -30,8 +245,9 @@ const createVehicle = async (req, res) => {
       images = await Promise.all(uploadPromises);
     }
 
+    // Create vehicle
     const vehicle = await Vehicle.create({
-      ...req.body,
+      ...sanitizedData,
       images,
     });
 
@@ -51,11 +267,12 @@ const createVehicle = async (req, res) => {
   }
 };
 
-
 // Get all vehicles
 const getVehicles = async (req, res) => {
   try {
-    const vehicles = await Vehicle.find().sort({ createdAt: -1 });
+    const vehicles = await Vehicle.find().sort({
+      createdAt: -1,
+    });
 
     res.status(200).json({
       success: true,
@@ -63,6 +280,8 @@ const getVehicles = async (req, res) => {
       vehicles,
     });
   } catch (error) {
+    console.error("Get vehicles error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to fetch vehicles",
@@ -70,7 +289,6 @@ const getVehicles = async (req, res) => {
     });
   }
 };
-
 
 // Get one vehicle
 const getVehicleById = async (req, res) => {
@@ -89,6 +307,8 @@ const getVehicleById = async (req, res) => {
       vehicle,
     });
   } catch (error) {
+    console.error("Get vehicle error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to fetch vehicle",
@@ -96,7 +316,6 @@ const getVehicleById = async (req, res) => {
     });
   }
 };
-
 
 // Update a vehicle
 const updateVehicle = async (req, res) => {
@@ -110,27 +329,52 @@ const updateVehicle = async (req, res) => {
       });
     }
 
-    // Update normal vehicle fields
-    Object.keys(req.body).forEach((key) => {
-      vehicle[key] = req.body[key];
+    // Sanitize and normalize incoming data
+    const sanitizedData = normalizeVehicleData(
+      sanitizeVehicleData(req.body)
+    );
+
+    // Merge with existing vehicle data
+    const mergedData = normalizeVehicleData({
+      ...vehicle.toObject(),
+      ...sanitizedData,
+    });
+
+    // Validate updated vehicle
+    const validationErrors = validateVehicleData(
+      mergedData
+    );
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: validationErrors,
+      });
+    }
+
+    // Update vehicle fields
+    Object.keys(sanitizedData).forEach((key) => {
+      vehicle[key] = sanitizedData[key];
     });
 
     // Upload new images if provided
     if (req.files && req.files.length > 0) {
       const uploadPromises = req.files.map((file) => {
         return new Promise((resolve, reject) => {
-          const uploadStream = cloudinary.uploader.upload_stream(
-            {
-              folder: "ruvasgod-auto/vehicles",
-            },
-            (error, result) => {
-              if (error) {
-                reject(error);
-              } else {
-                resolve(result.secure_url);
+          const uploadStream =
+            cloudinary.uploader.upload_stream(
+              {
+                folder: "ruvasgod-auto/vehicles",
+              },
+              (error, result) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  resolve(result.secure_url);
+                }
               }
-            }
-          );
+            );
 
           uploadStream.end(file.buffer);
         });
@@ -138,7 +382,7 @@ const updateVehicle = async (req, res) => {
 
       const newImages = await Promise.all(uploadPromises);
 
-      // Add new images to existing images
+      // Keep existing images and add new ones
       vehicle.images = [
         ...vehicle.images,
         ...newImages,
@@ -163,7 +407,6 @@ const updateVehicle = async (req, res) => {
   }
 };
 
-
 // Delete a vehicle
 const deleteVehicle = async (req, res) => {
   try {
@@ -178,23 +421,27 @@ const deleteVehicle = async (req, res) => {
 
     // Delete vehicle images from Cloudinary
     if (vehicle.images && vehicle.images.length > 0) {
-      const deletePromises = vehicle.images.map((imageUrl) => {
-        const parts = imageUrl.split("/upload/");
+      const deletePromises = vehicle.images.map(
+        (imageUrl) => {
+          const parts = imageUrl.split("/upload/");
 
-        if (parts.length < 2) {
-          return Promise.resolve();
+          if (parts.length < 2) {
+            return Promise.resolve();
+          }
+
+          const publicIdWithExtension = parts[1]
+            .split("/")
+            .slice(1)
+            .join("/");
+
+          const publicId = publicIdWithExtension.replace(
+            /\.[^/.]+$/,
+            ""
+          );
+
+          return cloudinary.uploader.destroy(publicId);
         }
-
-        const publicIdWithExtension = parts[1]
-          .split("/")
-          .slice(1)
-          .join("/");
-
-        const publicId = publicIdWithExtension
-          .replace(/\.[^/.]+$/, "");
-
-        return cloudinary.uploader.destroy(publicId);
-      });
+      );
 
       await Promise.all(deletePromises);
     }
@@ -216,7 +463,6 @@ const deleteVehicle = async (req, res) => {
   }
 };
 
-
 // Get alternative vehicles for given dates
 const getAlternativeVehicles = async (req, res) => {
   try {
@@ -231,8 +477,9 @@ const getAlternativeVehicles = async (req, res) => {
       });
     }
 
-    // Get the requested vehicle
-    const requestedVehicle = await Vehicle.findById(id);
+    // Get requested vehicle
+    const requestedVehicle =
+      await Vehicle.findById(id);
 
     if (!requestedVehicle) {
       return res.status(404).json({
@@ -241,11 +488,14 @@ const getAlternativeVehicles = async (req, res) => {
       });
     }
 
-    // Parse and validate dates
+    // Parse dates
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    if (
+      isNaN(start.getTime()) ||
+      isNaN(end.getTime())
+    ) {
       return res.status(400).json({
         success: false,
         message: "Invalid start or end date",
@@ -259,49 +509,59 @@ const getAlternativeVehicles = async (req, res) => {
       });
     }
 
-    // Find vehicles with the same type
+    // Find same-type rental vehicles
     const candidateVehicles = await Vehicle.find({
       type: requestedVehicle.type,
       availableForRent: true,
-      _id: { $ne: id }, // Exclude the requested vehicle
+      _id: { $ne: id },
     });
 
     // Filter out vehicles with conflicting bookings
     const availableVehicles = [];
 
     for (const vehicle of candidateVehicles) {
-      // Check for overlapping bookings
-      const conflictingBooking = await Booking.findOne({
-        vehicle: vehicle._id,
-        status: {
-          $in: ["pending", "confirmed", "active", "overdue"],
-        },
-        startDate: {
-          $lt: end,
-        },
-        endDate: {
-          $gt: start,
-        },
-      });
+      const conflictingBooking =
+        await Booking.findOne({
+          vehicle: vehicle._id,
+          status: {
+            $in: [
+              "pending",
+              "confirmed",
+              "active",
+              "overdue",
+            ],
+          },
+          startDate: {
+            $lt: end,
+          },
+          endDate: {
+            $gt: start,
+          },
+        });
 
       if (!conflictingBooking) {
         availableVehicles.push(vehicle);
       }
     }
 
-    // Sort by rental price (closest to the requested vehicle's price first)
+    // Sort by rental price difference
     availableVehicles.sort((a, b) => {
       const aPriceDiff = Math.abs(
-        a.rentalPricePerDay - requestedVehicle.rentalPricePerDay
+        a.rentalPricePerDay -
+          requestedVehicle.rentalPricePerDay
       );
+
       const bPriceDiff = Math.abs(
-        b.rentalPricePerDay - requestedVehicle.rentalPricePerDay
+        b.rentalPricePerDay -
+          requestedVehicle.rentalPricePerDay
       );
+
       return aPriceDiff - bPriceDiff;
     });
 
-    // Return top 3-6 alternatives
-    const alternatives = availableVehicles.slice(0, 6);
+    // Return up to 6 alternatives
+    const alternatives =
+      availableVehicles.slice(0, 6);
 
     res.status(200).json({
       success: true,
@@ -309,7 +569,10 @@ const getAlternativeVehicles = async (req, res) => {
       vehicles: alternatives,
     });
   } catch (error) {
-    console.error("Get alternative vehicles error:", error);
+    console.error(
+      "Get alternative vehicles error:",
+      error
+    );
 
     res.status(500).json({
       success: false,
