@@ -18,11 +18,33 @@ const staffRoutes = require("./routes/staffRoutes");
 
 const app = express();
 
+const configuredOrigins = (
+  process.env.CORS_ORIGINS || process.env.FRONTEND_URL || ""
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  ...configuredOrigins,
+];
+
 // Connect to MongoDB
 connectDB();
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS origin not allowed"));
+    },
+  })
+);
 app.use(helmet());
 app.use(morgan("dev"));
 
@@ -59,7 +81,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     message: "Something went wrong",
-    error: err.message,
   });
 });
 

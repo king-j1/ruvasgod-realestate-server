@@ -23,7 +23,9 @@ const protect = async (req, res, next) => {
     );
 
     // Find user
-    const user = await User.findById(decoded.id).select("-password");
+    const user = await User.findById(decoded.id).select(
+      "-password +tokenVersion +passwordChangedAt"
+    );
 
     if (!user) {
       return res.status(401).json({
@@ -37,6 +39,20 @@ const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "This account has been deactivated.",
+      });
+    }
+
+    const tokenWasIssuedBeforePasswordChange =
+      user.passwordChangedAt &&
+      decoded.iat * 1000 < user.passwordChangedAt.getTime();
+    const tokenVersionChanged =
+      decoded.tokenVersion !== undefined &&
+      decoded.tokenVersion !== (user.tokenVersion || 0);
+
+    if (tokenWasIssuedBeforePasswordChange || tokenVersionChanged) {
+      return res.status(401).json({
+        success: false,
+        message: "Not authorized. Invalid or expired token.",
       });
     }
 

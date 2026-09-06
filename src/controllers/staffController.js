@@ -3,6 +3,12 @@ const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Sale = require("../models/Sale");
 const { logAudit } = require("../services/auditService");
+const {
+  MIN_PASSWORD_LENGTH,
+  normalizeEmail,
+  isValidEmail,
+  isStrongPassword,
+} = require("../utils/authValidation");
 
 const ALLOWED_STAFF_ROLES = [
   "manager",
@@ -16,6 +22,7 @@ const ALLOWED_STAFF_ROLES = [
 const createStaff = async (req, res) => {
   try {
     const { name, email, phone, password, role } = req.body || {};
+    const normalizedEmail = normalizeEmail(email);
 
     if (!name || !email || !phone || !password || !role) {
       return res.status(400).json({
@@ -24,10 +31,17 @@ const createStaff = async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
+    if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message: "Please provide a valid email address",
+      });
+    }
+
+    if (!isStrongPassword(password)) {
+      return res.status(400).json({
+        success: false,
+        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
       });
     }
 
@@ -40,7 +54,7 @@ const createStaff = async (req, res) => {
     }
 
     const existingUser = await User.findOne({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
     });
 
     if (existingUser) {
@@ -54,7 +68,7 @@ const createStaff = async (req, res) => {
 
     const staff = await User.create({
       name,
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       phone,
       password: hashedPassword,
       role,
@@ -83,12 +97,18 @@ const createStaff = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email already exists",
+      });
+    }
+
     console.error("Create staff error:", error);
 
     res.status(500).json({
       success: false,
       message: "Failed to create staff account",
-      error: error.message,
     });
   }
 };

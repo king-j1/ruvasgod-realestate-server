@@ -18,14 +18,40 @@ const userSchema = new mongoose.Schema(
 
     phone: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
     },
 
     password: {
       type: String,
-      required: true,
-      minlength: 6,
+      select: false,
+    },
+
+    googleId: {
+      type: String,
+      unique: true,
+      sparse: true,
+      select: false,
+    },
+
+    passwordResetTokenHash: {
+      type: String,
+      select: false,
+    },
+
+    passwordResetExpiresAt: {
+      type: Date,
+      select: false,
+    },
+
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+
+    passwordChangedAt: {
+      type: Date,
       select: false,
     },
 
@@ -52,5 +78,11 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+userSchema.pre("validate", function () {
+  if (this.isNew && !this.googleId && !this.password) {
+    this.invalidate("password", "Password is required");
+  }
+});
 
 module.exports = mongoose.model("User", userSchema);
