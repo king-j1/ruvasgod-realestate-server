@@ -50,7 +50,25 @@ const verifyPayment = async (reference) => {
   return response.data;
 };
 
+const requestRefund = async (reference) => {
+  const response = await axios.post(
+    "https://api.paystack.co/refund",
+    {
+      transaction: reference,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  return response.data;
+};
+
 module.exports = {
   initializePayment,
   verifyPayment,
+  requestRefund,
 };

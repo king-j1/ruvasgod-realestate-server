@@ -38,6 +38,41 @@ const saleSchema = new mongoose.Schema(
       trim: true,
     },
 
+    refundStatus: {
+      type: String,
+      enum: [
+        "not_requested",
+        "pending",
+        "processing",
+        "refunded",
+        "failed",
+        "needs_attention",
+      ],
+      default: "not_requested",
+    },
+
+    refundRequestedAt: {
+      type: Date,
+      default: null,
+    },
+
+    refundedAt: {
+      type: Date,
+      default: null,
+    },
+
+    refundReference: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    refundError: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
     saleStatus: {
       type: String,
       enum: ["pending", "reserved", "completed", "cancelled", "failed", "refunded"],

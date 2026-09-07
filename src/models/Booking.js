@@ -67,6 +67,46 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+
+    refundStatus: {
+      type: String,
+      enum: [
+        "not_requested",
+        "pending",
+        "processing",
+        "refunded",
+        "failed",
+        "needs_attention",
+      ],
+      default: "not_requested",
+    },
+
+    refundRequestedAt: {
+      type: Date,
+      default: null,
+    },
+
+    refundedAt: {
+      type: Date,
+      default: null,
+    },
+
+    refundReference: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    refundError: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    holdExpiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

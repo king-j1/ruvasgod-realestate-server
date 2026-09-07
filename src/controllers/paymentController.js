@@ -4,7 +4,159 @@ const mongoose = require("mongoose");
 const Booking = require("../models/Booking");
 const Sale = require("../models/Sale");
 const Vehicle = require("../models/Vehicle");
-const { initializePayment, verifyPayment } = require("../services/paymentService");
+const {
+  initializePayment,
+  verifyPayment,
+  requestRefund,
+} = require("../services/paymentService");
+
+const PENDING_HOLD_MS = 30 * 60 * 1000;
+
+const getRefundStatus = (refundData) => {
+  const status = refundData?.data?.status || refundData?.status;
+
+  if (["refunded", "processed", "success"].includes(status)) {
+    return "refunded";
+  }
+
+  if (["pending", "processing"].includes(status)) {
+    return "processing";
+  }
+
+  if (["needs_attention", "needs-attention"].includes(status)) {
+    return "needs_attention";
+  }
+
+  return "failed";
+};
+
+const expirePendingBookingHolds = async (session) => {
+  await Booking.updateMany(
+    {
+      status: "pending",
+      paymentStatus: { $in: ["unpaid", "pending"] },
+      holdExpiresAt: { $lte: new Date() },
+    },
+    {
+      $set: {
+        status: "cancelled",
+        paymentStatus: "failed",
+      },
+    },
+    session ? { session } : undefined
+  );
+};
+
+const completeExpiredPaidBookings = async (session) => {
+  await Booking.updateMany(
+    {
+      status: { $in: ["confirmed", "active", "overdue"] },
+      paymentStatus: "paid",
+      endDate: { $lt: new Date() },
+    },
+    {
+      $set: {
+        status: "completed",
+      },
+    },
+    { session }
+  );
+};
+
+const conflictingRentalQuery = (vehicleId, now) => ({
+  vehicle: vehicleId,
+  $or: [
+    {
+      status: { $in: ["confirmed", "active", "overdue"] },
+      paymentStatus: "paid",
+    },
+    {
+      status: "pending",
+      paymentStatus: { $in: ["unpaid", "pending"] },
+      holdExpiresAt: { $gt: now },
+    },
+  ],
+});
+
+const requestBookingRefund = async (booking, reference) => {
+  const refundClaim = await Booking.updateOne(
+    {
+      _id: booking._id,
+      refundStatus: "not_requested",
+    },
+    {
+      $set: {
+        refundStatus: "pending",
+        refundRequestedAt: new Date(),
+      },
+    }
+  );
+
+  if (refundClaim.modifiedCount === 0) {
+    return Booking.findById(booking._id);
+  }
+
+  try {
+    const refundResponse = await requestRefund(reference);
+    const refundStatus = getRefundStatus(refundResponse);
+    const refundUpdate = {
+      refundStatus,
+      refundReference:
+        refundResponse?.data?.id?.toString() ||
+        refundResponse?.data?.reference ||
+        null,
+      refundError:
+        refundStatus === "failed" || refundStatus === "needs_attention"
+          ? refundResponse?.message || "Paystack refund requires attention"
+          : null,
+    };
+
+    if (refundStatus === "refunded") {
+      refundUpdate.paymentStatus = "refunded";
+      refundUpdate.refundedAt = new Date();
+    }
+
+    await Booking.updateOne(
+      { _id: booking._id, refundStatus: "pending" },
+      { $set: refundUpdate }
+    );
+  } catch (error) {
+    await Booking.updateOne(
+      { _id: booking._id, refundStatus: "pending" },
+      {
+        $set: {
+          refundStatus: "needs_attention",
+          refundError:
+            error.response?.data?.message ||
+            error.message ||
+            "Paystack refund request failed",
+        },
+      }
+    );
+  }
+
+  return Booking.findById(booking._id);
+};
+
+const rentalConflictMessage = (refundStatus) => {
+  if (refundStatus === "refunded") {
+    return "The rental could not be fulfilled. The payment was refunded.";
+  }
+
+  if (refundStatus === "processing") {
+    return "The rental could not be fulfilled. The payment refund is processing.";
+  }
+
+  if (refundStatus === "needs_attention") {
+    return "The rental could not be fulfilled. The payment refund requires attention.";
+  }
+
+  if (refundStatus === "failed") {
+    return "The rental could not be fulfilled. The payment refund failed.";
+  }
+
+  return "The rental could not be fulfilled. The payment refund is being requested.";
+};
 
 
 
@@ -92,6 +244,7 @@ const initializeBookingPayment = async (req, res) => {
     // Save payment reference
     booking.paymentReference = reference;
     booking.paymentStatus = "pending";
+    booking.holdExpiresAt = new Date(Date.now() + PENDING_HOLD_MS);
 
     await booking.save();
 
@@ -119,6 +272,134 @@ const initializeBookingPayment = async (req, res) => {
       message: "Failed to initialize payment",
     });
   }
+};
+
+const finalizeBookingPayment = async ({ reference, transaction }) => {
+  let booking = await Booking.findOne({
+    paymentReference: reference,
+  });
+
+  if (!booking && transaction?.metadata?.bookingId) {
+    booking = await Booking.findById(transaction.metadata.bookingId);
+  }
+
+  if (!booking) {
+    return { notFound: true };
+  }
+
+  if (booking.paymentStatus === "paid" && booking.status === "confirmed") {
+    return { success: true, alreadyPaid: true, booking };
+  }
+
+  if (
+    booking.status === "cancelled" &&
+    booking.refundStatus !== "not_requested"
+  ) {
+    return {
+      success: false,
+      conflict: true,
+      refundStatus: booking.refundStatus,
+      message: rentalConflictMessage(booking.refundStatus),
+      booking,
+    };
+  }
+
+  const session = await mongoose.startSession();
+  let conflict = false;
+
+  try {
+    await session.withTransaction(async () => {
+      await expirePendingBookingHolds(session);
+      await completeExpiredPaidBookings(session);
+
+      const currentBooking = await Booking.findById(booking._id).session(
+        session
+      );
+
+      if (!currentBooking || currentBooking.status !== "pending") {
+        conflict = true;
+
+        if (currentBooking) {
+          currentBooking.paymentReference = reference;
+          currentBooking.paymentStatus = "paid";
+          currentBooking.status = "cancelled";
+          await currentBooking.save({ session });
+          booking = currentBooking;
+        }
+
+        return;
+      }
+
+      if (
+        currentBooking.holdExpiresAt &&
+        currentBooking.holdExpiresAt <= new Date()
+      ) {
+        currentBooking.status = "cancelled";
+        currentBooking.paymentReference = reference;
+        currentBooking.paymentStatus = "paid";
+        await currentBooking.save({ session });
+        booking = currentBooking;
+        conflict = true;
+        return;
+      }
+
+      const completedSale = await Sale.findOne({
+        vehicle: currentBooking.vehicle,
+        saleStatus: "completed",
+        ownershipStatus: "transferred",
+      }).session(session);
+
+      if (completedSale) {
+        conflict = true;
+        currentBooking.paymentReference = reference;
+        currentBooking.paymentStatus = "paid";
+        currentBooking.status = "cancelled";
+        await currentBooking.save({ session });
+        booking = currentBooking;
+        return;
+      }
+
+      const vehicleUpdateResult = await Vehicle.updateOne(
+        { _id: currentBooking.vehicle, availableForRent: true },
+        { $inc: { availabilityVersion: 1 } },
+        { session }
+      );
+
+      if (vehicleUpdateResult.matchedCount === 0) {
+        conflict = true;
+        currentBooking.paymentReference = reference;
+        currentBooking.paymentStatus = "paid";
+        currentBooking.status = "cancelled";
+        await currentBooking.save({ session });
+        booking = currentBooking;
+        return;
+      }
+
+      currentBooking.paymentReference = reference;
+      currentBooking.paymentStatus = "paid";
+      currentBooking.status = "confirmed";
+      currentBooking.holdExpiresAt = null;
+
+      await currentBooking.save({ session });
+      booking = currentBooking;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  if (conflict) {
+    booking = await requestBookingRefund(booking, reference);
+
+    return {
+      success: false,
+      conflict: true,
+      refundStatus: booking?.refundStatus,
+      message: rentalConflictMessage(booking?.refundStatus),
+      booking,
+    };
+  }
+
+  return { success: true, booking };
 };
 
 // Verify Paystack payment
@@ -197,17 +478,29 @@ const verifyBookingPayment = async (req, res) => {
       });
     }
 
-    // Mark payment and booking as successful
-    booking.paymentReference = reference;
-    booking.paymentStatus = "paid";
-    booking.status = "confirmed";
+    const result = await finalizeBookingPayment({ reference, transaction });
 
-    await booking.save();
+    if (result.notFound) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking for this payment was not found",
+      });
+    }
+
+    if (result.conflict) {
+      return res.status(409).json({
+        success: false,
+        message: result.message,
+        refundStatus: result.refundStatus,
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: "Payment verified successfully",
-      booking,
+      message: result.alreadyPaid
+        ? "Payment was already processed"
+        : "Payment verified successfully",
+      booking: result.booking,
     });
 
   } catch (error) {
@@ -365,14 +658,43 @@ const finalizeSalePayment = async ({ reference, transaction }) => {
     return { success: true, alreadyCompleted: true, sale };
   }
 
+  // A losing sale already has a refund operation claimed or completed.
+  if (sale.saleStatus === "failed" && sale.refundStatus !== "not_requested") {
+    return { success: false, conflict: true, refundPending: true, sale };
+  }
+
   const session = await mongoose.startSession();
   let conflict = false;
 
   try {
     await session.withTransaction(async () => {
+      await expirePendingBookingHolds(session);
+      await completeExpiredPaidBookings(session);
+
+      const conflictingRental = await Booking.findOne(
+        conflictingRentalQuery(sale.vehicle, new Date())
+      ).session(session);
+
+      if (conflictingRental) {
+        conflict = true;
+
+        sale.paymentReference = reference;
+        sale.paymentStatus = "paid";
+        sale.saleStatus = "failed";
+        sale.ownershipStatus = "cancelled";
+        sale.refundStatus = "pending";
+        sale.refundRequestedAt = new Date();
+
+        await sale.save({ session });
+        return;
+      }
+
       const vehicleUpdateResult = await Vehicle.updateOne(
         { _id: sale.vehicle, availableForSale: true },
-        { $set: { availableForSale: false, availableForRent: false } },
+        {
+          $set: { availableForSale: false, availableForRent: false },
+          $inc: { availabilityVersion: 1 },
+        },
         { session }
       );
 
@@ -384,6 +706,8 @@ const finalizeSalePayment = async ({ reference, transaction }) => {
         sale.paymentStatus = "paid";
         sale.saleStatus = "failed";
         sale.ownershipStatus = "cancelled";
+        sale.refundStatus = "pending";
+        sale.refundRequestedAt = new Date();
 
         await sale.save({ session });
         return;
@@ -403,11 +727,61 @@ const finalizeSalePayment = async ({ reference, transaction }) => {
   }
 
   if (conflict) {
+    let refundStatus = sale.refundStatus;
+
+    if (sale.refundStatus === "pending") {
+      try {
+        const refundResponse = await requestRefund(reference);
+        refundStatus = getRefundStatus(refundResponse);
+
+        const refundUpdate = {
+          refundStatus,
+          refundReference:
+            refundResponse?.data?.id?.toString() ||
+            refundResponse?.data?.reference ||
+            null,
+          refundError:
+            refundStatus === "failed" || refundStatus === "needs_attention"
+              ? refundResponse?.message || "Paystack refund requires attention"
+              : null,
+        };
+
+        if (refundStatus === "refunded") {
+          refundUpdate.paymentStatus = "refunded";
+          refundUpdate.refundedAt = new Date();
+        }
+
+        await Sale.updateOne(
+          { _id: sale._id, refundStatus: "pending" },
+          { $set: refundUpdate }
+        );
+      } catch (error) {
+        refundStatus = "needs_attention";
+
+        await Sale.updateOne(
+          { _id: sale._id, refundStatus: "pending" },
+          {
+            $set: {
+              refundStatus,
+              refundError:
+                error.response?.data?.message ||
+                error.message ||
+                "Paystack refund request failed",
+            },
+          }
+        );
+      }
+    }
+
+    sale.refundStatus = refundStatus;
+
     return {
       success: false,
       conflict: true,
       message:
-        "Vehicle already sold to another customer. Payment was captured and requires manual refund.",
+        refundStatus === "refunded"
+          ? "Vehicle is no longer available. The payment was refunded."
+          : "Vehicle is no longer available. The payment refund is being processed or requires attention.",
       sale,
     };
   }
@@ -611,28 +985,26 @@ const handlePaystackWebhook = async (req, res) => {
       });
     }
 
-    // Prevent duplicate processing
-    if (booking.paymentStatus === "paid") {
+    const result = await finalizeBookingPayment({ reference, transaction });
+
+    if (result.notFound) {
       return res.status(200).json({
         success: true,
-        message: "Payment already processed",
+        message: "Booking not found",
       });
     }
 
-    // Mark booking as paid
-    booking.paymentReference = reference;
-    booking.paymentStatus = "paid";
-    booking.status = "confirmed";
-
-    await booking.save();
-
     console.log(
-      `Booking ${booking._id} marked as paid`
+      `Booking ${result.booking._id} payment finalization attempted`
     );
 
     res.status(200).json({
       success: true,
-      message: "Webhook processed successfully",
+      message: result.conflict
+        ? "Webhook processed with rental conflict"
+        : result.alreadyPaid
+          ? "Payment already processed"
+          : "Webhook processed successfully",
     });
 
   } catch (error) {

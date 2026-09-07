@@ -6,8 +6,10 @@ const { OAuth2Client } = require("google-auth-library");
 const {
   MIN_PASSWORD_LENGTH,
   normalizeEmail,
+  normalizeUsername,
   isValidEmail,
   isStrongPassword,
+  isValidUsername,
 } = require("../utils/authValidation");
 const { sendPasswordResetEmail } = require("../services/emailService");
 
@@ -15,6 +17,7 @@ const googleClient = new OAuth2Client();
 
 const publicUser = (user) => ({
   id: user._id,
+  username: user.username,
   name: user.name,
   email: user.email,
   phone: user.phone,
@@ -33,16 +36,50 @@ const issueToken = (user) => {
   );
 };
 
+const createGoogleUsername = async (email) => {
+  const emailName = normalizeUsername(email.split("@")[0]).replace(
+    /[^a-z0-9_]/g,
+    ""
+  );
+  const base = (emailName || "user").slice(0, 20);
+
+  for (let suffix = 0; suffix <= 999; suffix += 1) {
+    const suffixText = suffix === 0 ? "" : String(suffix);
+    const candidate = `${base.slice(0, 20 - suffixText.length)}${suffixText}`;
+
+    if (!isValidUsername(candidate)) {
+      continue;
+    }
+
+    const existingUser = await User.exists({ username: candidate });
+
+    if (!existingUser) {
+      return candidate;
+    }
+  }
+
+  throw new Error("Unable to create a unique Google username");
+};
+
 // Register
 const register = async (req, res) => {
   try {
-    const { name, email, phone, password } = req.body || {};
+    const { username, name, email, phone, password } = req.body || {};
+    const normalizedUsername = normalizeUsername(username);
     const normalizedEmail = normalizeEmail(email);
 
-    if (!name || !email || !phone || !password) {
+    if (!username || !name || !email || !phone || !password) {
       return res.status(400).json({
         success: false,
-        message: "Name, email, phone and password are required",
+        message: "Username, name, email, phone and password are required",
+      });
+    }
+
+    if (!isValidUsername(normalizedUsername)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Username must be 3 to 20 characters and use only letters, numbers, and underscores",
       });
     }
 
@@ -71,10 +108,22 @@ const register = async (req, res) => {
       });
     }
 
+    const existingUsername = await User.exists({
+      username: normalizedUsername,
+    });
+
+    if (existingUsername) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this username already exists",
+      });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 12);
 
     const user = await User.create({
       name: name.trim(),
+      username: normalizedUsername,
       email: normalizedEmail,
       phone: phone.trim(),
       password: hashedPassword,
@@ -87,6 +136,13 @@ const register = async (req, res) => {
     });
   } catch (error) {
     if (error.code === 11000) {
+      if (error.keyPattern?.username) {
+        return res.status(409).json({
+          success: false,
+          message: "An account with this username already exists",
+        });
+      }
+
       return res.status(409).json({
         success: false,
         message: "An account with this email already exists",
@@ -106,17 +162,25 @@ const register = async (req, res) => {
 // Login
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    const normalizedEmail = normalizeEmail(email);
+    const { identifier, email, password } = req.body || {};
+    const loginIdentifier = identifier || email;
+    const normalizedEmail = normalizeEmail(loginIdentifier);
+    const normalizedUsername = normalizeUsername(loginIdentifier);
 
-    if (!email || !password) {
+    if (!loginIdentifier || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required",
+        message: "Username or email and password are required",
       });
     }
 
-    if (!isValidEmail(normalizedEmail)) {
+    const identifierQuery = isValidEmail(normalizedEmail)
+      ? { email: normalizedEmail }
+      : isValidUsername(normalizedUsername)
+        ? { username: normalizedUsername }
+        : null;
+
+    if (!identifierQuery) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -124,9 +188,9 @@ const login = async (req, res) => {
     }
 
     // Explicitly include password because User model uses select: false
-    const user = await User.findOne({
-      email: normalizedEmail,
-    }).select("+password +tokenVersion");
+    const user = await User.findOne(identifierQuery).select(
+      "+password +tokenVersion"
+    );
 
     if (!user || !user.password) {
       return res.status(401).json({
@@ -363,6 +427,7 @@ const googleLogin = async (req, res) => {
         name: (payload.name || email.split("@")[0]).trim(),
         email,
         phone: "",
+        username: await createGoogleUsername(email),
         googleId: payload.sub,
         role: "customer",
       });

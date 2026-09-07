@@ -1,5 +1,43 @@
+const mongoose = require("mongoose");
 const Booking = require("../models/Booking");
 const Vehicle = require("../models/Vehicle");
+
+const PENDING_HOLD_MS = 30 * 60 * 1000;
+
+const expirePendingBookingHolds = async (session) => {
+  await Booking.updateMany(
+    {
+      status: "pending",
+      paymentStatus: { $in: ["unpaid", "pending"] },
+      holdExpiresAt: { $lte: new Date() },
+    },
+    {
+      $set: {
+        status: "cancelled",
+        paymentStatus: "failed",
+      },
+    },
+    { session }
+  );
+};
+
+const completeExpiredPaidBookings = async (session) => {
+  const now = new Date();
+
+  await Booking.updateMany(
+    {
+      status: { $in: ["confirmed", "active", "overdue"] },
+      paymentStatus: "paid",
+      endDate: { $lt: now },
+    },
+    {
+      $set: {
+        status: "completed",
+      },
+    },
+    { session }
+  );
+};
 
 // Update lifecycle statuses for paid rentals based on current UTC date
 const markOverdueBookings = async () => {
@@ -96,53 +134,103 @@ const createBooking = async (req, res) => {
       });
     }
 
-    // Prevent overlapping bookings
-    const existingBooking = await Booking.findOne({
-      vehicle: vehicleId,
-      status: {
-        $in: ["pending", "confirmed", "active", "overdue"],
-      },
-      startDate: {
-        $lt: end,
-      },
-      endDate: {
-        $gt: start,
-      },
-    });
+    const session = await mongoose.startSession();
+    let booking;
+    let conflictMessage;
 
-    if (existingBooking) {
-      const conflictingStart = existingBooking.startDate
-        .toISOString()
-        .split("T")[0];
+    try {
+      await session.withTransaction(async () => {
+        await expirePendingBookingHolds(session);
+        await completeExpiredPaidBookings(session);
 
-      const conflictingEnd = existingBooking.endDate
-        .toISOString()
-        .split("T")[0];
+        const currentVehicle = await Vehicle.findById(vehicleId).session(
+          session
+        );
 
-      return res.status(409).json({
-        success: false,
-        message: `Vehicle is already booked for these dates (${existingBooking.status}: ${conflictingStart} to ${conflictingEnd})`,
+        if (!currentVehicle || !currentVehicle.availableForRent) {
+          conflictMessage = "This vehicle is no longer available for rental";
+          return;
+        }
+
+        const existingBooking = await Booking.findOne({
+          vehicle: vehicleId,
+          $or: [
+            {
+              status: { $in: ["confirmed", "active", "overdue"] },
+              paymentStatus: "paid",
+            },
+            {
+              status: "pending",
+              paymentStatus: { $in: ["unpaid", "pending"] },
+              $or: [
+                { holdExpiresAt: { $gt: new Date() } },
+                { holdExpiresAt: { $exists: false } },
+                { holdExpiresAt: null },
+              ],
+            },
+          ],
+          startDate: { $lt: end },
+          endDate: { $gt: start },
+        }).session(session);
+
+        if (existingBooking) {
+          const conflictingStart = existingBooking.startDate
+            .toISOString()
+            .split("T")[0];
+
+          const conflictingEnd = existingBooking.endDate
+            .toISOString()
+            .split("T")[0];
+
+          conflictMessage = `Vehicle is already booked for these dates (${existingBooking.status}: ${conflictingStart} to ${conflictingEnd})`;
+          return;
+        }
+
+        const vehicleUpdateResult = await Vehicle.updateOne(
+          { _id: vehicleId, availableForRent: true },
+          { $inc: { availabilityVersion: 1 } },
+          { session }
+        );
+
+        if (vehicleUpdateResult.matchedCount === 0) {
+          conflictMessage = "This vehicle is no longer available for rental";
+          return;
+        }
+
+        const millisecondsPerDay = 1000 * 60 * 60 * 24;
+        const rentalDays = Math.ceil(
+          (end - start) / millisecondsPerDay
+        );
+        const totalPrice = rentalDays * currentVehicle.rentalPricePerDay;
+
+        const createdBookings = await Booking.create(
+          [
+            {
+              user: req.user._id,
+              vehicle: vehicleId,
+              startDate: start,
+              endDate: end,
+              totalPrice,
+              status: "pending",
+              paymentStatus: "unpaid",
+              holdExpiresAt: new Date(Date.now() + PENDING_HOLD_MS),
+            },
+          ],
+          { session }
+        );
+
+        booking = createdBookings[0];
       });
+    } finally {
+      await session.endSession();
     }
 
-    const millisecondsPerDay = 1000 * 60 * 60 * 24;
-
-    const rentalDays = Math.ceil(
-      (end - start) / millisecondsPerDay
-    );
-
-    const totalPrice =
-      rentalDays * vehicle.rentalPricePerDay;
-
-    const booking = await Booking.create({
-      user: req.user._id,
-      vehicle: vehicleId,
-      startDate: start,
-      endDate: end,
-      totalPrice,
-      status: "pending",
-      paymentStatus: "unpaid",
-    });
+    if (conflictMessage) {
+      return res.status(409).json({
+        success: false,
+        message: conflictMessage,
+      });
+    }
 
     res.status(201).json({
       success: true,
