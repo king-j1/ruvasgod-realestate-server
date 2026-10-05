@@ -17,7 +17,7 @@ app.use(express.json());
 // Test Route
 app.get("/", (req, res) => {
   res.json({
-    message: "Ruvasgod Auto API is running 🚗",
+    message: "Ruvasgod Real Estate API is running 🏠",
   });
 });
 
